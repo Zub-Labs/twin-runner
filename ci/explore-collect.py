@@ -98,16 +98,74 @@ def ocr(d, r):
     r["needs_login"] = bool(login >= 1 and n - login <= 2 and not r.get("playback_seen"))
 
 
+_REL_IDS = {}
+_ASSETS = {}
+
+
+def _api(method, url, data=None, ctype=None):
+    """one GitHub REST call with the job's DATA_TOKEN; returns (status, parsed body or None)"""
+    import urllib.request, urllib.error
+    h = {"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"}
+    if ctype:
+        h["Content-Type"] = ctype
+    r = urllib.request.Request(url, data=data, method=method, headers=h)
+    try:
+        with urllib.request.urlopen(r, timeout=900) as resp:
+            b = resp.read()
+            return resp.status, (json.loads(b) if b else None)
+    except urllib.error.HTTPError as e:
+        return e.code, None
+
+
+def _rel_id(rel):
+    if rel not in _REL_IDS:
+        st, j = _api("GET", "https://api.github.com/repos/%s/releases/tags/%s" % (REPO, rel))
+        if st == 404:
+            st, j = _api("POST", "https://api.github.com/repos/%s/releases" % REPO,
+                         json.dumps({"tag_name": rel, "name": rel, "prerelease": True}).encode(), "application/json")
+        if not j:
+            return None
+        _REL_IDS[rel] = j["id"]
+    return _REL_IDS[rel]
+
+
+def _delete_existing(rel, rid, asset):
+    """only on a name clash (re-upload): list the release once per job, delete the old asset"""
+    if rel not in _ASSETS:
+        out, page = {}, 1
+        while True:
+            st, a = _api("GET", "https://api.github.com/repos/%s/releases/%d/assets?per_page=100&page=%d" % (REPO, rid, page))
+            if not a:
+                break
+            out.update({x["name"]: x["id"] for x in a})
+            if len(a) < 100:
+                break
+            page += 1
+        _ASSETS[rel] = out
+    aid = _ASSETS[rel].pop(asset, None)
+    if aid:
+        _api("DELETE", "https://api.github.com/repos/%s/releases/assets/%d" % (REPO, aid))
+
+
 def upload(rel, path, asset):
+    """direct REST upload: about 1 API call per asset (gh --clobber listed the whole release each time)"""
+    import urllib.parse
+    data = open(path, "rb").read()
+    ctype = "image/jpeg" if asset.endswith(".jpg") else "application/gzip"
     for t in range(4):
-        tmp = os.path.join(os.path.dirname(path), asset)
-        if tmp != path:
-            shutil.copyfile(path, tmp)
-        p = run(["gh", "release", "upload", rel, tmp, "-R", REPO, "--clobber"], timeout=900)
-        if p.returncode == 0:
-            return True
-        log("upload %s try %d: %s" % (asset, t, p.stderr[-300:]))
-        time.sleep(15 * (t + 1))
+        rid = _rel_id(rel)
+        if rid is None:
+            st = 0
+        else:
+            st, j = _api("POST", "https://uploads.github.com/repos/%s/releases/%d/assets?name=%s"
+                         % (REPO, rid, urllib.parse.quote(asset)), data, ctype)
+            if st == 201:
+                return True
+            if st == 422:            # already exists: replace it
+                _delete_existing(rel, rid, asset)
+                continue
+        log("upload %s try %d: HTTP %s" % (asset, t, st))
+        time.sleep(60 * (t + 1) if st in (403, 429) else 15 * (t + 1))
     return False
 
 

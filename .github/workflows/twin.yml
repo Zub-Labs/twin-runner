@@ -94,8 +94,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p $W/apks/pool
-          for a in $LIST; do f=${a#pool/}; [[ "$f" =~ ^[A-Za-z0-9._+-]+\.apk$ ]] || { echo "::error::bad apk name"; exit 1; }
-            gh release download "$REL" -R sarahubprivate/twinci-data -p "$f" -D $W/apks/pool --clobber; done
+          files=""
+          for a in $LIST; do f=${a#pool/}; [[ "$f" =~ ^[A-Za-z0-9._+-]+\.apk$ ]] || { echo "::error::bad apk name"; exit 1; }; files="$files $f"; done
+          GH_TOKEN="$GH_TOKEN" python3 ci/ghrel.py download sarahubprivate/twinci-data "$REL" $W/apks/pool $files
           ls $W/apks/pool | wc -l
       - name: Runtime from release builds
         if: inputs.runtime_asset != ''
@@ -144,5 +145,5 @@ jobs:
         run: |
           f=/tmp/twin-${{ inputs.name }}-${{ github.run_id }}.tar.gz
           sudo tar -C /opt/twinci -czf $f out
-          gh release upload reports $f -R sarahubprivate/twinci-data --clobber
+          python3 ci/ghrel.py upload sarahubprivate/twinci-data reports $f
           echo "report: $(basename $f)  apps: $(wc -l < /opt/twinci/out/SUMMARY.txt 2>/dev/null || echo 0)"
