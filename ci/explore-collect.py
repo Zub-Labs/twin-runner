@@ -58,7 +58,7 @@ def sheets(d, r):
         tiles.append((f, st, c[2], c[3] in bad_screens, ""))
     for f in sorted(glob.glob(os.path.join(d, "events", "*-after.jpg"))):
         kind = os.path.basename(f)[5:-10]
-        if kind in ("crash", "black", "launch", "relaunch-failed"):
+        if kind in ("crash", "black", "launch", "relaunch-failed", "died-after-relaunch"):
             st = int(os.path.basename(f)[:4])
             tiles.append((f, st, rows[st][2] if st in rows else "", True, kind.upper()))
     tiles.sort(key=lambda t: t[1])

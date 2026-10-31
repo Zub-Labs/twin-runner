@@ -268,6 +268,15 @@ class App:
                 r["failed_step"] = 0
             return
         f = self.settle(40)
+        rc, alive = self.alive()
+        if not alive:                   # the window came, then the app died while it settled
+            self.prev = f
+            self.save(f, "events", "0000-launch-after.jpg", full=True)
+            r["exit_rc"] = rc
+            r["category"] = "crashed" if rc not in (None, 0) else "no-window"
+            r["failed_step"] = 0
+            r["died_after_window"] = True
+            return
         self.prev = f
         self.step = 0
         self.cur, _ = self.identify(f)
@@ -319,6 +328,10 @@ class App:
                     self.event("relaunch-failed", None, grab(), str(rc2))
                     break
                 f = self.settle(20)
+                if not self.alive()[1]:
+                    self.event("died-after-relaunch", None, f)
+                    r["stop"] = "died-after-relaunch"
+                    break
                 self.prev = f
                 self.cur, new = self.identify(f)
                 if new:
