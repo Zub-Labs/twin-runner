@@ -49,6 +49,9 @@ on:
       keys:
         description: "explore: key script run after the first screen, e.g. DOWN*2,OK,WAIT5,RIGHT,OK (KEY, KEY*n, WAITn); a non-empty script names the output as a re-run"
         default: ""
+      shots_release:
+        description: "explore: twinci-data release for the per-app tarballs"
+        default: "shots-625"
 permissions:
   contents: read
 jobs:
@@ -139,10 +142,12 @@ jobs:
           LIST: ${{ inputs.apks }}
           RUN_NAME: ${{ inputs.name }}
           TWINS: ${{ inputs.twins }}
+          SHOTS_RELEASE: ${{ inputs.shots_release }}
         run: |
           [[ "$MIN" =~ ^[0-9]{1,2}(\.[0-9])?$ ]] || { echo "::error::bad minutes"; exit 1; }
           [[ "$KEYS" =~ ^[A-Za-z0-9_*,\ ]*$ ]] || { echo "::error::bad key script"; exit 1; }
           [[ "$RUN_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::bad name"; exit 1; }
+          [[ "$SHOTS_RELEASE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "::error::bad shots_release"; exit 1; }
           export RERUN_ID=$([ -n "$KEYS" ] && echo "$GITHUB_RUN_ID" || true)
           sudo -E bash ci/run-explore.sh "$TWINS" "$RUN_NAME" "$MIN" $LIST
       - name: Collect

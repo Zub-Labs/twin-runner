@@ -3,7 +3,7 @@
 
 Picks up each app folder that harness.explore finished (DONE) in a twin's harness container, adds OCR text, needs-login and
 contact sheets, packs it and uploads it to the private sarahubprivate/twinci-data:
-  tarball  release shots-625,             asset <number>-<package>.tar.gz         (re-run: <number>-<package>.rerun-<RERUN_ID>.tar.gz)
+  tarball  release $SHOTS_RELEASE (default shots-625), asset <number>-<package>.tar.gz         (re-run: <number>-<package>.rerun-<RERUN_ID>.tar.gz)
   sheets   release sheets-625-<1st digit>, asset <number>-sheet<k>.jpg (k = 1..6)  (re-run: <number>-rerun-<RERUN_ID>-sheet<k>.jpg)
 Public stdout: counts only. Details go to stderr (a private file)."""
 import glob
@@ -23,6 +23,7 @@ X = "/opt/twinci/explore"
 APPS = os.path.join(X, "apps")
 REPO = "sarahubprivate/twinci-data"
 RERUN = os.environ.get("RERUN_ID", "")
+SHOTS = os.environ.get("SHOTS_RELEASE") or "shots-625"   # tarball release (workflow input shots_release)
 MAX_SHEET_ASSETS = 6
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 LOGIN_RE = re.compile(r"sign[ -]?in|log[ -]?in|sign[ -]?up|create (an )?account|e-?mail|password|activation code|activate|"
@@ -193,7 +194,7 @@ def process(twin, stem, partial=False):
     num = stem.split("-")[0]
     tb = os.path.join(X, stem + (".rerun-%s" % RERUN if RERUN else "") + ".tar.gz")
     run(["tar", "-C", APPS, "-czf", tb, stem])
-    ok = upload("shots-625", tb, os.path.basename(tb))
+    ok = upload(SHOTS, tb, os.path.basename(tb))
     rel = "sheets-625-%s" % num[0]
     n_ok = 0
     # separate sheet assets cost one content-creation call each (GitHub secondary limit, about 80/min and 500/h per user,
