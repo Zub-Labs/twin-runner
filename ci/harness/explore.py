@@ -85,6 +85,8 @@ class App:
         self.fruitful = set()   # screen ids from which a key led to a new screen
         self.clicked = set()    # screen ids that got the pointer grid
         self.peak_kb = 0
+        self.visible = False    # the app had a visible window at the last alive() check
+        self.ever_visible = False
         self.step = 0
         self.cur = None         # current screen id
         self.prev = None        # last Frame
@@ -140,10 +142,13 @@ class App:
 
     def alive(self):
         rc = exited(self.appid, new_lines(ATLD_LOG, self.atld0))
-        return rc, rc is None and (bool(visible_window(self.appid)) or self.appid in twin.running())
+        self.visible = rc is None and bool(visible_window(self.appid))
+        self.ever_visible = self.ever_visible or self.visible
+        return rc, rc is None and (self.visible or self.appid in twin.running())
 
-    def act(self, key, settle=2.0):
-        """press key (or wait), screenshot, classify; returns (Frame, new?, moving?, rc, alive)"""
+    def act(self, key, settle=2.0, count=True):
+        """press key (or wait), screenshot, classify; returns (Frame, new?, moving?, rc, alive)
+        count=False (after HOME), or the app alive without a visible window: the frame is not an app screen"""
         self.step += 1
         before = self.prev
         if key.startswith("WAIT"):
@@ -166,7 +171,10 @@ class App:
             self.sample_mem()
         errs = self.new_errors()
         new = False
-        if alive:
+        away = alive and not (count and (self.visible or not self.ever_visible))
+        if away:
+            sid = None
+        elif alive:
             if moving and self.r["playback_seen"]:
                 sid = self.cur          # video again: not a new screen
             else:
@@ -188,7 +196,8 @@ class App:
         elif alive and f.blank and before is not None and not before.blank:
             ev.append("black")
             self.event("black", before, f)
-        self.rows.append([self.step, round(time.time() - self.t0), key, sid if sid else "-", "new" if new else ("seen" if alive else "exit"),
+        self.rows.append([self.step, round(time.time() - self.t0), key, sid if sid else "-",
+                          "new" if new else ("away" if away else ("seen" if alive else "exit")),
                           "moving" if moving else "", " ".join(ev), " | ".join(errs)[:300]])
         self.prev = f
         return f, new, moving, rc, alive
@@ -360,7 +369,7 @@ class App:
         self.sample_mem()
         pid0 = [w["pid"] for w in visible_window(self.appid)]
         last = self.prev
-        f, new, moving, rc, alive = self.act("HOME", settle=3)
+        f, new, moving, rc, alive = self.act("HOME", settle=3, count=False)
         r["running_after_home"] = self.appid in twin.running()
         twin.launch(self.appid)
         time.sleep(6)
@@ -405,7 +414,7 @@ class App:
         if "category" not in r:
             if r.get("crashes"):
                 r["category"] = "died-on-input"
-            elif r.get("first_screen_blank") and all(float(s.std()) / 255.0 < 0.012 for _, s, _ in self.screens):
+            elif self.screens and all(float(s.std()) / 255.0 < 0.012 for _, s, _ in self.screens):   # in-app screens all near-uniform
                 r["category"] = "blank-window"
             elif r["screens"] <= 1:
                 r["category"] = "no-input"
