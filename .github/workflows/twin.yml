@@ -1,0 +1,118 @@
+name: twin-apptest
+run-name: ${{ inputs.name }}
+# Boots 1-4 TV twin containers on a GitHub arm64 runner (public repo: 4 vCPU; the CPU runs 32-bit ARM natively) and
+# runs the twin harness's app test on the given APKs. All images and data are private: twin images on ghcr.io,
+# runtime builds in sarahubprivate/twinci (release builds), APKs and reports in sarahubprivate/twinci-data. They are
+# reached with the DATA_TOKEN secret. Nothing private is printed to this public log.
+on:
+  workflow_dispatch:
+    inputs:
+      apks:
+        description: "APK files, space separated, relative to the APK image (all/<file> or arm64/<file>), or a smoke list name: smoke"
+        default: smoke
+      twins:
+        description: "twins on this runner (1-4; 4 vCPU runner: up to 3 at tv_cpus 0.65 + harness 0.25)"
+        default: "3"
+      apk_release:
+        description: "optional: release tag in twinci-data holding the APKs; then apks are file names in it, given as pool/<file>"
+        default: ""
+      runner:
+        description: "runner label"
+        default: ubuntu-24.04-arm
+      tv_cpus:
+        description: "CPU cap of each TV container (N2 is faster than Oracle N1; ~0.65 matches N1 at 1.0)"
+        default: "0.65"
+      runtime_image:
+        description: "optional: tag of ghcr.io/sarahahzub/twinci-rt (oracle: twinci-push.sh runtime <file.sqfs>) to test instead of the snapshot's runtime"
+        default: ""
+      runtime_asset:
+        description: "optional: asset in release builds (atl-build output atl64-*.sqfs or atl32-*.sqfs), sha256-checked, tested instead of the snapshot's runtime.sqfs (atl32-*: runtime32.sqfs)"
+        default: ""
+      state:
+        description: "tag of ghcr.io/sarahahzub/twinci-state: twin volume snapshot (20261030 = twin3, 64-bit manager + atl2-dpad)"
+        default: "20261030"
+      name:
+        description: "report name"
+        default: run
+      tag:
+        description: "image tag on ghcr.io"
+        default: "20261030"
+permissions:
+  contents: read
+jobs:
+  twin:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 300
+    env:
+      R: ghcr.io/sarahahzub
+      TAG: ${{ inputs.tag }}
+      W: /opt/twinci
+      DOCKER_HOST: unix:///var/run/docker.sock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host like the TV
+        run: |
+          sudo sysctl -w vm.swappiness=70
+          free -m; nproc; df -h / | tail -1
+      - name: Pull images
+        env:
+          PULL: ${{ secrets.DATA_TOKEN }}
+        run: |
+          echo "$PULL" | docker login ghcr.io -u sarahahzub --password-stdin >/dev/null
+          t0=$(date +%s)
+          for p in tv harness builder tree apks; do docker pull -q $R/twinci-$p:$TAG & done
+          docker pull -q $R/twinci-state:${{ inputs.state }} &
+          [ -n "${{ inputs.runtime_image }}" ] && docker pull -q $R/twinci-rt:${{ inputs.runtime_image }} &
+          wait
+          echo "pull took $(( $(date +%s) - t0 )) s"
+          docker tag $R/twinci-tv:$TAG tvtwin-tv; docker tag $R/twinci-harness:$TAG tvtwin-harness; docker tag $R/twinci-builder:$TAG tvtwin-builder
+          sudo mkdir -p $W && sudo chown $USER $W
+          for p in tree apks; do id=$(docker create $R/twinci-$p:$TAG /x); docker cp $id:/$p $W/ ; docker rm $id >/dev/null; done
+          id=$(docker create $R/twinci-state:${{ inputs.state }} /x); docker cp $id:/state $W/; docker rm $id >/dev/null
+          if [ -n "${{ inputs.runtime_image }}" ]; then id=$(docker create $R/twinci-rt:${{ inputs.runtime_image }} /x); docker cp $id:/rt/runtime.sqfs $W/runtime.sqfs; docker rm $id >/dev/null; sha256sum $W/runtime.sqfs; fi
+          docker image rm $R/twinci-apks:$TAG $R/twinci-tree:$TAG >/dev/null
+          du -sh $W/* 2>/dev/null | sed 's#.*/##' | head -5
+      - name: APKs from twinci-data
+        if: inputs.apk_release != ''
+        env:
+          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+          REL: ${{ inputs.apk_release }}
+          LIST: ${{ inputs.apks }}
+        run: |
+          set -euo pipefail
+          mkdir -p $W/apks/pool
+          for a in $LIST; do f=${a#pool/}; [[ "$f" =~ ^[A-Za-z0-9._+-]+\.apk$ ]] || { echo "::error::bad apk name"; exit 1; }
+            gh release download "$REL" -R sarahubprivate/twinci-data -p "$f" -D $W/apks/pool --clobber; done
+          ls $W/apks/pool | wc -l
+      - name: Runtime from release builds
+        if: inputs.runtime_asset != ''
+        env:
+          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+          A: ${{ inputs.runtime_asset }}
+          RI: ${{ inputs.runtime_image }}
+        run: |
+          set -euo pipefail
+          [ -z "$RI" ] || { echo "::error::give runtime_image or runtime_asset, not both"; exit 1; }
+          [[ "$A" =~ ^[A-Za-z0-9._+-]+\.sqfs$ ]] || { echo "::error::runtime_asset must be an asset name ending in .sqfs: $A"; exit 1; }
+          d=$(mktemp -d)
+          gh release download builds -R sarahubprivate/twinci -p "$A" -p "$A.sha256" -D "$d"
+          want=$(cut -d' ' -f1 "$d/$A.sha256"); got=$(sha256sum "$d/$A" | cut -d' ' -f1)
+          echo "$A: sha256 $got, $A.sha256 says $want, $(stat -c %s "$d/$A") bytes"
+          [ "$want" = "$got" ] || { echo "::error::$A does not match its .sha256"; exit 1; }
+          mv "$d/$A" $W/runtime.sqfs
+      - name: Boot twins
+        run: sudo -E bash ci/boot-twins.sh "${{ inputs.twins }}" "${{ inputs.tv_cpus }}" "${{ (inputs.runtime_image != '' || inputs.runtime_asset != '') && '/opt/twinci/runtime.sqfs' || '' }}" "${{ startsWith(inputs.runtime_asset, 'atl32-') && 'runtime32' || 'runtime' }}"
+      - name: App test
+        run: sudo -E bash ci/run-apptest.sh "${{ inputs.twins }}" "${{ inputs.name }}" ${{ inputs.apks }}
+      - name: Collect
+        if: always()
+        run: sudo -E bash ci/collect.sh "${{ inputs.twins }}" "${{ inputs.name }}"
+      - name: Upload reports to twinci-data (private)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+        run: |
+          f=/tmp/twin-${{ inputs.name }}-${{ github.run_id }}.tar.gz
+          sudo tar -C /opt/twinci -czf $f out
+          gh release upload reports $f -R sarahubprivate/twinci-data --clobber
+          echo "report: $(basename $f)  apps: $(wc -l < /opt/twinci/out/SUMMARY.txt 2>/dev/null || echo 0)"

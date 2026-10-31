@@ -1,0 +1,35 @@
+name: arm32-probe
+# Checks whether a GitHub arm64 runner can run 32-bit ARM (armv7/AArch32) code natively, which the TV twin needs.
+on:
+  workflow_dispatch:
+  push:
+    branches: [probe]
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: CPU and kernel
+        run: |
+          uname -a
+          nproc; free -m; df -h / | tail -1
+          lscpu | grep -E 'Model name|Vendor|Architecture|CPU op-mode' || true
+          grep -m1 -E 'CPU part' /proc/cpuinfo || true   # 0xd0c = Neoverse N1, 0xd49 = Neoverse N2
+          grep -m1 Features /proc/cpuinfo || true
+          grep -E 'CONFIG_COMPAT=|CONFIG_ARM64_VA_BITS=' /boot/config-$(uname -r) || echo "no kernel config file"
+      - name: Remove QEMU handlers so nothing is emulated
+        run: |
+          ls /proc/sys/fs/binfmt_misc/ || true
+          for f in /proc/sys/fs/binfmt_misc/qemu-*; do [ -e "$f" ] && { echo "disable $f"; echo -1 | sudo tee "$f" >/dev/null; }; done
+          ls /proc/sys/fs/binfmt_misc/
+      - name: Run 32-bit ARM code natively
+        run: |
+          set +e
+          docker run --rm --platform linux/arm/v7 arm32v7/busybox sh -c 'echo NATIVE_ARMV7_OK; uname -m'
+          echo "armv7 exit=$?"
+          docker run --rm --platform linux/arm/v5 arm32v5/debian:bookworm-slim sh -c 'echo NATIVE_ARMEL_OK; dpkg --print-architecture'
+          echo "armel exit=$?"
+      - name: Docker limits the twin uses
+        run: |
+          docker info --format 'cgroup={{.CgroupVersion}} driver={{.CgroupDriver}} seccomp={{.SecurityOptions}}'
+          docker run --rm --cpus 1.0 --memory 706m --memory-swap 1657m arm64v8/busybox sh -c 'cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max'
