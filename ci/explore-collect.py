@@ -9,6 +9,7 @@ Public stdout: counts only. Details go to stderr (a private file)."""
 import glob
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -152,7 +153,7 @@ def upload(rel, path, asset):
     import urllib.parse
     data = open(path, "rb").read()
     ctype = "image/jpeg" if asset.endswith(".jpg") else "application/gzip"
-    for t in range(4):
+    for t in range(6):
         rid = _rel_id(rel)
         if rid is None:
             st = 0
@@ -165,7 +166,7 @@ def upload(rel, path, asset):
                 _delete_existing(rel, rid, asset)
                 continue
         log("upload %s try %d: HTTP %s" % (asset, t, st))
-        time.sleep(60 * (t + 1) if st in (403, 429) else 15 * (t + 1))
+        time.sleep((120 * (t + 1) + random.randint(0, 60)) if st in (403, 429) else 15 * (t + 1))
     return False
 
 
@@ -195,7 +196,9 @@ def process(twin, stem, partial=False):
     ok = upload("shots-625", tb, os.path.basename(tb))
     rel = "sheets-625-%s" % num[0]
     n_ok = 0
-    for k, s in enumerate(sh[:MAX_SHEET_ASSETS], 1):
+    # separate sheet assets cost one content-creation call each (GitHub secondary limit, about 80/min and 500/h per user,
+    # shared by all jobs). The sheets are inside the tarball (sheets/), so they are only uploaded on request.
+    for k, s in enumerate(sh[:MAX_SHEET_ASSETS] if os.environ.get("SHEET_ASSETS") == "1" else [], 1):
         a = "%s-rerun-%s-sheet%d.jpg" % (num, RERUN, k) if RERUN else "%s-sheet%d.jpg" % (num, k)
         n_ok += upload(rel, s, a)
     r["uploaded"] = ok
