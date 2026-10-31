@@ -11,9 +11,13 @@ for i in $(seq 0 $((N-1))); do T=${names[$i]}
   docker exec $T-tv tail -n 300 /media/developer/webosatl/logs/atld.log > $O/$T/atld.log 2>/dev/null || true
   docker inspect -f '{{.Name}} cpus={{.HostConfig.NanoCpus}} mem={{.HostConfig.Memory}}' $T-tv $T-harness >> $O/caps.txt 2>/dev/null
 done
-python3 - $O <<'EOF' | tee $O/SUMMARY.txt
+# explore mode: per-app summary and private harness/collector logs
+[ -d $W/explore ] && cp -r $W/explore/SUMMARY.tsv $W/explore/log $O/ 2>/dev/null
+python3 - $O <<'EOF' > $O/SUMMARY.txt
 import glob, json, sys
 for f in sorted(glob.glob(sys.argv[1] + "/*/*/apps.json")):
     for a in json.load(open(f)):
         print(f.split("/")[-3], a.get("apk"), a.get("category"), a.get("signature") or "", (a.get("evidence") or "")[:120].replace("\n", " "))
 EOF
+[ -f $O/SUMMARY.tsv ] && tail -n +2 $O/SUMMARY.tsv >> $O/SUMMARY.txt
+echo "summary lines: $(wc -l < $O/SUMMARY.txt)"
