@@ -23,7 +23,7 @@ for i in $(seq 0 $((N-1))); do T=${names[$i]}
     sleep 3
     echo "$T: $(echo ${share[$T]} | wc -w) apps"
     docker exec $T-harness python -m harness.explore --apks /data/apks-$NAME --out /data/explore/$NAME --minutes "$MIN" \
-      --keys "${KEYS:-}" > $X/log/$T.log 2>&1
+      --keys "${KEYS:-}" $([ "${POINTER:-0}" = 1 ] && echo --pointer) > $X/log/$T.log 2>&1
     echo "$T: harness exit $?"
   ) &
   PIDS+=($!)

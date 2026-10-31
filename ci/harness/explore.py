@@ -32,6 +32,7 @@ ARROWS = ["DOWN", "RIGHT", "UP", "LEFT"]
 SAME = 0.004       # changed-pixel fraction below which two thumbnails are the same screen
 MOVING = 0.02      # changed-pixel fraction between two shots 1 s apart (no key) that counts as motion
 IDLE_STOP = 40
+POINTER = False    # --pointer: opt-in pointer-grid fallback (off by default)
 # pointer clicks (Magic Remote) on a 3x3 grid, tried on a screen where no key gave a new screen
 GRID = ["CLICK%d_%d" % (x, y) for y in (200, 540, 880) for x in (480, 960, 1440)]
 GREP_ERR = ("FATAL EXCEPTION|UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|NoSuchMethodError|AbstractMethodError|"
@@ -298,7 +299,7 @@ class App:
         while time.time() < self.deadline - 60 and idle < IDLE_STOP:
             sid = self.cur
             todo = self.todo.get(sid) or []
-            if not todo and sid not in self.fruitful and sid not in self.clicked:
+            if POINTER and not todo and sid not in self.fruitful and sid not in self.clicked:
                 self.clicked.add(sid)
                 todo = self.todo[sid] = list(GRID)
             if todo:
@@ -424,7 +425,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--minutes", type=float, default=20)
     ap.add_argument("--keys", default="", help="key script run after the first screen: KEY, KEY*n, WAITn (s), CLICKx_y, comma separated")
+    ap.add_argument("--pointer", action="store_true", help="opt-in: 3x3 pointer clicks on screens where no key gave a new screen")
     a = ap.parse_args()
+    global POINTER
+    POINTER = a.pointer
     keys = parse_keys(a.keys)
     os.makedirs(a.out, exist_ok=True)
     twin.wait_ready()
