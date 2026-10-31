@@ -32,6 +32,8 @@ ARROWS = ["DOWN", "RIGHT", "UP", "LEFT"]
 SAME = 0.004       # changed-pixel fraction below which two thumbnails are the same screen
 MOVING = 0.02      # changed-pixel fraction between two shots 1 s apart (no key) that counts as motion
 IDLE_STOP = 40
+# pointer clicks (Magic Remote) on a 3x3 grid, tried on a screen where no key gave a new screen
+GRID = ["CLICK%d_%d" % (x, y) for y in (200, 540, 880) for x in (480, 960, 1440)]
 GREP_ERR = ("FATAL EXCEPTION|UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|NoSuchMethodError|AbstractMethodError|"
             "SIGSEGV|SIGABRT|SIGBUS|Fatal signal|Segmentation fault|(java|android|kotlin)[.][A-Za-z0-9_.]+(Exception|Error)")
 TOKEN_RE = re.compile(r"^(WAIT\d{1,3}|CLICK\d{1,4}_\d{1,4}|[A-Z0-9_]{1,12}(\*\d{1,2})?)$")
@@ -79,6 +81,9 @@ class App:
         self.screens = []       # [(id, Frame-small, step)]
         self.todo = {}          # screen id -> untried keys
         self.opened = {}        # screen id -> reached with OK
+        self.fruitful = set()   # screen ids from which a key led to a new screen
+        self.clicked = set()    # screen ids that got the pointer grid
+        self.peak_kb = 0
         self.step = 0
         self.cur = None         # current screen id
         self.prev = None        # last Frame
@@ -123,6 +128,15 @@ class App:
             self.logoff = int(ls[0])
         return [l.replace("\x00", "")[:240] for l in ls[1:]]
 
+    def sample_mem(self):
+        try:
+            pids = sorted({w["pid"] for w in visible_window(self.appid)})
+            if pids:
+                out = sh("cat %s 2>/dev/null | awk '/VmHWM/{print $2}'" % " ".join("/proc/%d/status" % p for p in pids))["stdout"]
+                self.peak_kb = max([self.peak_kb] + [int(x) for x in out.split() if x.isdigit()])
+        except twin.TwinError:
+            pass
+
     def alive(self):
         rc = exited(self.appid, new_lines(ATLD_LOG, self.atld0))
         return rc, rc is None and (bool(visible_window(self.appid)) or self.appid in twin.running())
@@ -147,6 +161,8 @@ class App:
         f = grab()
         moving = a.dist(f) > MOVING
         rc, alive = self.alive()
+        if alive and self.step % 10 == 1:
+            self.sample_mem()
         errs = self.new_errors()
         new = False
         if alive:
@@ -273,6 +289,9 @@ class App:
         while time.time() < self.deadline - 60 and idle < IDLE_STOP:
             sid = self.cur
             todo = self.todo.get(sid) or []
+            if not todo and sid not in self.fruitful and sid not in self.clicked:
+                self.clicked.add(sid)
+                todo = self.todo[sid] = list(GRID)
             if todo:
                 key = todo.pop(0)
             elif self.opened.get(sid):
@@ -293,6 +312,7 @@ class App:
             if not alive:
                 r["relaunches"] += 1
                 if r["relaunches"] > 3:
+                    r["stop"] = "relaunch-limit"
                     break
                 rc2, _ = self.launch(120)
                 if rc2 is not None:
@@ -307,13 +327,15 @@ class App:
                 continue
             if new:
                 idle = 0
-                self.todo[self.cur] = ["OK"] + ARROWS + (["MENU"] if key == "OK" else [])
-                self.opened[self.cur] = key == "OK" or (self.opened.get(sid, False) and key in ARROWS)
+                self.fruitful.add(sid)
+                opener = key == "OK" or key.startswith("CLICK")
+                self.todo[self.cur] = ["OK"] + ARROWS + (["MENU"] if opener else [])
+                self.opened[self.cur] = opener or (self.opened.get(sid, False) and key in ARROWS)
                 if moving and not r["playback_seen"]:
                     self.playback()
             else:
                 idle += 1
-        r["stop"] = "idle" if idle >= IDLE_STOP else "time"
+        r.setdefault("stop", "idle" if idle >= IDLE_STOP else ("stall" if r.get("stalled_at") else "time"))
         self.finish()
 
     def finish(self):
@@ -321,6 +343,7 @@ class App:
         rc, alive = self.alive()
         if not alive:
             return
+        self.sample_mem()
         pid0 = [w["pid"] for w in visible_window(self.appid)]
         last = self.prev
         f, new, moving, rc, alive = self.act("HOME", settle=3)
@@ -349,7 +372,7 @@ class App:
             time.sleep(4)
             atxt = new_lines(ATLD_LOG, max(0, self.atld0 - 400))
             peak = re.findall(r"peak_rss=(\d+)MB", "\n".join(l for l in atxt.splitlines() if self.appid in l))
-            r["peak_rss_mb"] = max(int(p) for p in peak) if peak else None
+            r["peak_rss_mb"] = max([int(p) for p in peak] + [self.peak_kb // 1024]) or None
             rl = [l for l in atxt.splitlines() if re.search(r"runtime.*\b(32|64)-bit", l)]
             r["runtime_line"] = rl[-1][-200:] if rl else ""
             applog = sh("cat %s/%s/app.log 2>/dev/null | tail -c 400000" % (APPS, self.appid), timeout=60)["stdout"]
