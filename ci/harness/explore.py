@@ -34,7 +34,7 @@ MOVING = 0.02      # changed-pixel fraction between two shots 1 s apart (no key)
 IDLE_STOP = 40
 GREP_ERR = ("FATAL EXCEPTION|UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|NoSuchMethodError|AbstractMethodError|"
             "SIGSEGV|SIGABRT|SIGBUS|Fatal signal|Segmentation fault|(java|android|kotlin)[.][A-Za-z0-9_.]+(Exception|Error)")
-TOKEN_RE = re.compile(r"^(WAIT\d{1,3}|[A-Z0-9_]{1,12}(\*\d{1,2})?)$")
+TOKEN_RE = re.compile(r"^(WAIT\d{1,3}|CLICK\d{1,4}_\d{1,4}|[A-Z0-9_]{1,12}(\*\d{1,2})?)$")
 
 
 class Frame:
@@ -121,7 +121,7 @@ class App:
         ls = r.splitlines()
         if ls and ls[0].strip().isdigit():
             self.logoff = int(ls[0])
-        return [l[:240] for l in ls[1:]]
+        return [l.replace("\x00", "")[:240] for l in ls[1:]]
 
     def alive(self):
         rc = exited(self.appid, new_lines(ATLD_LOG, self.atld0))
@@ -133,6 +133,11 @@ class App:
         before = self.prev
         if key.startswith("WAIT"):
             time.sleep(int(key[4:] or 5))
+        elif key.startswith("CLICK"):     # pointer click at x_y of the 1920x1080 screen
+            x, y = (int(v) for v in key[5:].split("_"))
+            twin.pointer("move", x, y)
+            time.sleep(0.5)
+            twin.pointer("click", x, y)
         elif key != "(look)":
             k, _, n = key.partition("*")
             twin.key(k, repeat=int(n or 1))
@@ -350,7 +355,7 @@ class App:
             applog = sh("cat %s/%s/app.log 2>/dev/null | tail -c 400000" % (APPS, self.appid), timeout=60)["stdout"]
             open(os.path.join(self.dir, "app.log"), "w").write(applog)
             r["signature"], r["evidence"] = signature(applog)
-            L = applog.splitlines()
+            L = applog.replace("\x00", "").splitlines()
             errs = []
             for pat in (r"(java|android|kotlin)\.[\w.]+(Exception|Error)\b|FATAL EXCEPTION", r"SIGSEGV|SIGABRT|SIGBUS|Fatal signal|Segmentation fault|backtrace"):
                 i = next((i for i, l in enumerate(L) if re.search(pat, l)), None)
@@ -382,7 +387,7 @@ def main():
     ap.add_argument("--apks", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--minutes", type=float, default=20)
-    ap.add_argument("--keys", default="", help="key script run after the first screen: KEY, KEY*n, WAITn (s), comma separated")
+    ap.add_argument("--keys", default="", help="key script run after the first screen: KEY, KEY*n, WAITn (s), CLICKx_y, comma separated")
     a = ap.parse_args()
     keys = parse_keys(a.keys)
     os.makedirs(a.out, exist_ok=True)

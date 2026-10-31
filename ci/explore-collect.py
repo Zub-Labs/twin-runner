@@ -60,7 +60,7 @@ def sheets(d, r):
         kind = os.path.basename(f)[5:-10]
         if kind in ("crash", "black", "launch", "relaunch-failed"):
             st = int(os.path.basename(f)[:4])
-            tiles.append((f, st, rows.get(st, [0, 0, kind])[2], True, kind.upper()))
+            tiles.append((f, st, rows[st][2] if st in rows else "", True, kind.upper()))
     tiles.sort(key=lambda t: t[1])
     out, F, Fs = [], font(30), font(40)
     for k in range(0, len(tiles), 9):
