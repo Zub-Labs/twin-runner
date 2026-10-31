@@ -3,7 +3,7 @@ run-name: ${{ inputs.name }}
 # Boots 1-4 TV twin containers on a GitHub arm64 runner (public repo: 4 vCPU; the CPU runs 32-bit ARM natively) and
 # runs the twin harness's app test on the given APKs. All images and data are private: twin images on ghcr.io,
 # runtime builds in sarahubprivate/twinci (release builds), APKs and reports in sarahubprivate/twinci-data. They are
-# reached with the DATA_TOKEN secret. Nothing private is printed to this public log.
+# reached with the twinci-bot app token (APP_ID, APP_KEY) and DATA_TOKEN (ghcr pulls only). Nothing private is printed to this public log.
 on:
   workflow_dispatch:
     inputs:
@@ -62,6 +62,16 @@ jobs:
       DOCKER_HOST: unix:///var/run/docker.sock
     steps:
       - uses: actions/checkout@v4
+      # data traffic (APKs, runtime images, tarballs, reports) uses the twinci-bot GitHub App, which has its own API
+      # quota. DATA_TOKEN (the user's PAT) is only used to pull the private twin images from ghcr.io.
+      - name: App token for twinci data
+        id: app
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_KEY }}
+          owner: sarahubprivate
+          repositories: twinci,twinci-data
       - name: Host like the TV
         run: |
           sudo sysctl -w vm.swappiness=70
@@ -88,7 +98,7 @@ jobs:
       - name: APKs from twinci-data
         if: inputs.apk_release != ''
         env:
-          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           REL: ${{ inputs.apk_release }}
           LIST: ${{ inputs.apks }}
         run: |
@@ -101,7 +111,7 @@ jobs:
       - name: Runtime from release builds
         if: inputs.runtime_asset != ''
         env:
-          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           A: ${{ inputs.runtime_asset }}
           RI: ${{ inputs.runtime_image }}
         run: |
@@ -109,7 +119,7 @@ jobs:
           [ -z "$RI" ] || { echo "::error::give runtime_image or runtime_asset, not both"; exit 1; }
           [[ "$A" =~ ^[A-Za-z0-9._+-]+\.sqfs$ ]] || { echo "::error::runtime_asset must be an asset name ending in .sqfs: $A"; exit 1; }
           d=$(mktemp -d)
-          gh release download builds -R sarahubprivate/twinci -p "$A" -p "$A.sha256" -D "$d"
+          python3 ci/ghrel.py download sarahubprivate/twinci builds "$d" "$A" "$A.sha256"
           want=$(cut -d' ' -f1 "$d/$A.sha256"); got=$(sha256sum "$d/$A" | cut -d' ' -f1)
           echo "$A: sha256 $got, $A.sha256 says $want, $(stat -c %s "$d/$A") bytes"
           [ "$want" = "$got" ] || { echo "::error::$A does not match its .sha256"; exit 1; }
@@ -122,7 +132,7 @@ jobs:
       - name: Explore
         if: inputs.mode == 'explore'
         env:
-          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           KEYS: ${{ inputs.keys }}
           POINTER: ${{ inputs.pointer }}
           MIN: ${{ inputs.minutes }}
@@ -141,7 +151,7 @@ jobs:
       - name: Upload reports to twinci-data (private)
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.DATA_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           f=/tmp/twin-${{ inputs.name }}-${{ github.run_id }}.tar.gz
           sudo tar -C /opt/twinci -czf $f out
