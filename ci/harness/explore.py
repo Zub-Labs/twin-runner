@@ -26,13 +26,20 @@ import numpy as np
 from PIL import Image
 
 from . import apptest, atl, twin
-from .apptest import APPS, ATLD_LOG, conf, exited, lines, new_lines, oom_kills, sh, signature, visible_window
+from .apptest import APPS, ATLD_LOG, conf, exited, lines, oom_kills, sh, signature, visible_window
 
 ARROWS = ["DOWN", "RIGHT", "UP", "LEFT"]
 SAME = 0.004       # changed-pixel fraction below which two thumbnails are the same screen
 MOVING = 0.02      # changed-pixel fraction between two shots 1 s apart (no key) that counts as motion
 IDLE_STOP = 40
 POINTER = False    # --pointer: opt-in pointer-grid fallback (off by default)
+ASCII = " | tr '\\200-\\377' '?'"   # log reads: the twin's /exec decodes stdout as strict UTF-8 (HTTP 500 on other bytes)
+
+
+def new_lines(path, since):
+    return sh("tail -n +%d %s 2>/dev/null%s" % (since + 1, path, ASCII), timeout=30)["stdout"]
+
+
 # pointer clicks (Magic Remote) on a 3x3 grid, tried on a screen where no key gave a new screen
 GRID = ["CLICK%d_%d" % (x, y) for y in (200, 540, 880) for x in (480, 960, 1440)]
 GREP_ERR = ("FATAL EXCEPTION|UnsatisfiedLinkError|NoClassDefFoundError|ClassNotFoundException|NoSuchMethodError|AbstractMethodError|"
@@ -125,7 +132,7 @@ class App:
     def new_errors(self):
         p = "%s/%s/app.log" % (APPS, self.appid)
         r = sh("f=%s; s=$(stat -c %%s $f 2>/dev/null || echo 0); echo $s; [ $s -gt %d ] && tail -c +%d $f | head -c 400000 | "
-               "grep -a -m 3 -E '%s'" % (p, self.logoff, self.logoff + 1, GREP_ERR), timeout=30)["stdout"]
+               "grep -a -m 3 -E '%s'%s" % (p, self.logoff, self.logoff + 1, GREP_ERR, ASCII), timeout=30)["stdout"]
         ls = r.splitlines()
         if ls and ls[0].strip().isdigit():
             self.logoff = int(ls[0])
@@ -398,7 +405,7 @@ class App:
             r["peak_rss_mb"] = max([int(p) for p in peak] + [self.peak_kb // 1024]) or None
             rl = [l for l in atxt.splitlines() if re.search(r"runtime.*\b(32|64)-bit", l)]
             r["runtime_line"] = rl[-1][-200:] if rl else ""
-            applog = sh("cat %s/%s/app.log 2>/dev/null | tail -c 400000" % (APPS, self.appid), timeout=60)["stdout"]
+            applog = sh("cat %s/%s/app.log 2>/dev/null | tail -c 400000%s" % (APPS, self.appid, ASCII), timeout=60)["stdout"]
             open(os.path.join(self.dir, "app.log"), "w").write(applog)
             r["signature"], r["evidence"] = signature(applog)
             L = applog.replace("\x00", "").splitlines()
