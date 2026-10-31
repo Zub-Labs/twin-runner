@@ -34,6 +34,17 @@ MOVING = 0.02      # changed-pixel fraction between two shots 1 s apart (no key)
 IDLE_STOP = 40
 POINTER = False    # --pointer: opt-in pointer-grid fallback (off by default)
 ASCII = " | tr '\\200-\\377' '?'"   # log reads: the twin's /exec decodes stdout as strict UTF-8 (HTTP 500 on other bytes)
+_twin_sh = twin.sh
+
+
+def _ascii_sh(cmd, *a, **kw):
+    """every twin /exec (apptest.sh, atl.api, ...): stdout/stderr bytes >= 0x80 -> '?', exit code kept"""
+    w = ("o=/tmp/.xsh$$.o; e=/tmp/.xsh$$.e; (\n%s\n) >$o 2>$e; rc=$?; tr '\\200-\\377' '?' <$o; "
+         "tr '\\200-\\377' '?' <$e >&2; rm -f $o $e; exit $rc") % cmd
+    return _twin_sh(w, *a, **kw)
+
+
+twin.sh = _ascii_sh
 
 
 def new_lines(path, since):
