@@ -43,6 +43,9 @@ on:
       minutes:
         description: "explore: minutes per app"
         default: "20"
+      pointer:
+        description: "explore: 1 = pointer-grid clicks on screens where keys give nothing (touch-style apps)"
+        default: "0"
       keys:
         description: "explore: key script run after the first screen, e.g. DOWN*2,OK,WAIT5,RIGHT,OK (KEY, KEY*n, WAITn); a non-empty script names the output as a re-run"
         default: ""
@@ -120,6 +123,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.DATA_TOKEN }}
           KEYS: ${{ inputs.keys }}
+          POINTER: ${{ inputs.pointer }}
           MIN: ${{ inputs.minutes }}
           LIST: ${{ inputs.apks }}
           RUN_NAME: ${{ inputs.name }}
