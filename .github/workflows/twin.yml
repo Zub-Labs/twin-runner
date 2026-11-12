@@ -146,7 +146,26 @@ jobs:
         if: inputs.agent_hold_minutes != '0'
         run: |
           echo "agent mode: holding runner ${{ inputs.agent_hold_minutes }} min for agents (tailnet $(tailscale ip -4), host gh-twin-${{ github.run_id }})"
-          sleep $(( ${{ inputs.agent_hold_minutes }} * 60 ))
+          # Exit early once the agent is done and the runner is idle: the agent
+          # touches /tmp/agent-active when it claims the runner, and removes it
+          # + touches /tmp/agent-done when it releases the runner. Require the
+          # done-condition for 3 consecutive minutes so a new agent claiming the
+          # runner just as the old one finishes does not get cut off.
+          done_count=0
+          for i in $(seq 1 $(( ${{ inputs.agent_hold_minutes }} ))); do
+            sleep 60
+            if [ -f /tmp/agent-done ] && [ ! -f /tmp/agent-active ]; then
+              done_count=$((done_count + 1))
+              echo "agent done signal seen ($done_count/3)"
+              if [ "$done_count" -ge 3 ]; then
+                echo "agent done, exiting hold early"
+                exit 0
+              fi
+            else
+              done_count=0
+            fi
+          done
+          echo "hold time expired"
       - name: App test
         if: inputs.mode != 'explore' && inputs.agent_hold_minutes == '0'
         run: sudo -E bash ci/run-apptest.sh "${{ inputs.twins }}" "${{ inputs.name }}" ${{ inputs.apks }}
