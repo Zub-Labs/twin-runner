@@ -52,6 +52,9 @@ on:
       shots_release:
         description: "explore: twinci-data release for the per-app tarballs"
         default: "shots-625"
+      agent_hold_minutes:
+        description: "agent mode: hold the runner open this many minutes after booting twins (agents drive via Tailscale); 0 = normal harness run"
+        default: "0"
 permissions:
   contents: read
 jobs:
@@ -65,6 +68,16 @@ jobs:
       DOCKER_HOST: unix:///var/run/docker.sock
     steps:
       - uses: actions/checkout@v4
+      - name: Join tailnet (agents)
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if [ -z "$TS_AUTHKEY" ]; then echo "no TS_AUTHKEY secret, skipping tailnet join"; exit 0; fi
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="gh-twin-${{ github.run_id }}" --accept-routes=false
+          sudo tailscale set --ssh=true || true
+          echo "tailnet IP: $(tailscale ip -4)"
+          tailscale status | head -5
       # data traffic (APKs, runtime images, tarballs, reports) uses the twinci-bot GitHub App, which has its own API
       # quota. DATA_TOKEN (the user's PAT) is only used to pull the private twin images from ghcr.io.
       - name: App token for twinci data
@@ -129,11 +142,16 @@ jobs:
           mv "$d/$A" $W/runtime.sqfs
       - name: Boot twins
         run: sudo -E bash ci/boot-twins.sh "${{ inputs.twins }}" "${{ inputs.tv_cpus }}" "${{ (inputs.runtime_image != '' || inputs.runtime_asset != '') && '/opt/twinci/runtime.sqfs' || '' }}" "${{ startsWith(inputs.runtime_asset, 'atl32-') && 'runtime32' || 'runtime' }}"
+      - name: Hold for agents
+        if: inputs.agent_hold_minutes != '0'
+        run: |
+          echo "agent mode: holding runner ${{ inputs.agent_hold_minutes }} min for agents (tailnet $(tailscale ip -4), host gh-twin-${{ github.run_id }})"
+          sleep $(( ${{ inputs.agent_hold_minutes }} * 60 ))
       - name: App test
-        if: inputs.mode != 'explore'
+        if: inputs.mode != 'explore' && inputs.agent_hold_minutes == '0'
         run: sudo -E bash ci/run-apptest.sh "${{ inputs.twins }}" "${{ inputs.name }}" ${{ inputs.apks }}
       - name: Explore
-        if: inputs.mode == 'explore'
+        if: inputs.mode == 'explore' && inputs.agent_hold_minutes == '0'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           KEYS: ${{ inputs.keys }}
@@ -151,10 +169,10 @@ jobs:
           export RERUN_ID=$([ -n "$KEYS" ] && echo "$GITHUB_RUN_ID" || true)
           sudo -E bash ci/run-explore.sh "$TWINS" "$RUN_NAME" "$MIN" $LIST
       - name: Collect
-        if: always()
+        if: always() && inputs.agent_hold_minutes == '0'
         run: sudo -E bash ci/collect.sh "${{ inputs.twins }}" "${{ inputs.name }}"
       - name: Upload reports to twinci-data (private)
-        if: always()
+        if: always() && inputs.agent_hold_minutes == '0'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
