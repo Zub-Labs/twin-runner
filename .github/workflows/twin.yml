@@ -28,6 +28,9 @@ on:
       runtime_asset:
         description: "optional: asset in release builds (atl-build output atl64-*.sqfs or atl32-*.sqfs), sha256-checked, tested instead of the snapshot's runtime.sqfs (atl32-*: runtime32.sqfs)"
         default: ""
+      runtime_asset_2:
+        description: "optional: second asset in release builds, same format as runtime_asset. VERIFY RUNS ONLY (agent_hold_minutes != 0): twina boots runtime_asset, twinb boots runtime_asset_2, twins 3-4 boot runtime_asset. Do not use with apptest/explore mode (APKs are round-robined across twins, so results would mix runtimes). Requires runtime_asset; cannot combine with runtime_image. Mixed atl32-/atl64- pairs need a state with both runtime slots installed."
+        default: ""
       state:
         description: "tag of ghcr.io/sarahahzub/twinci-state: twin volume snapshot (20261030 = twin3, 64-bit manager + atl2-dpad)"
         default: "20261030"
@@ -54,6 +57,9 @@ on:
         default: "shots-625"
       agent_hold_minutes:
         description: "agent mode: hold the runner open this many minutes after booting twins (agents drive via Tailscale); 0 = normal harness run"
+        default: "0"
+      watchdog_minutes:
+        description: "agent mode: if > 0, the hold exits early when no hold file (/tmp/agent-active-* or /tmp/agent-done-*) has been touched for this many minutes, or when no agent claims the runner within 30 min of hold start. Agents MUST heartbeat-touch their active file at least every 10 min while working (background loop: while true; do sleep 300; touch /tmp/agent-active-<id>; done &). 0 = v3 behaviour (exit only on the done-signal or at agent_hold_minutes). Default 0 so existing dispatches are unaffected."
         default: "0"
 permissions:
   contents: read
@@ -140,12 +146,30 @@ jobs:
           echo "$A: sha256 $got, $A.sha256 says $want, $(stat -c %s "$d/$A") bytes"
           [ "$want" = "$got" ] || { echo "::error::$A does not match its .sha256"; exit 1; }
           mv "$d/$A" $W/runtime.sqfs
+      - name: Runtime 2 from release builds
+        if: inputs.runtime_asset_2 != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          A: ${{ inputs.runtime_asset_2 }}
+          A1: ${{ inputs.runtime_asset }}
+          RI: ${{ inputs.runtime_image }}
+        run: |
+          set -euo pipefail
+          [ -n "$A1" ] || { echo "::error::runtime_asset_2 requires runtime_asset"; exit 1; }
+          [ -z "$RI" ] || { echo "::error::runtime_asset_2 cannot combine with runtime_image (one image applies to all twins)"; exit 1; }
+          [[ "$A" =~ ^[A-Za-z0-9._+-]+\.sqfs$ ]] || { echo "::error::runtime_asset_2 must be an asset name ending in .sqfs: $A"; exit 1; }
+          d=$(mktemp -d)
+          python3 ci/ghrel.py download sarahubprivate/twinci builds "$d" "$A" "$A.sha256"
+          want=$(cut -d' ' -f1 "$d/$A.sha256"); got=$(sha256sum "$d/$A" | cut -d' ' -f1)
+          echo "$A: sha256 $got, $A.sha256 says $want, $(stat -c %s "$d/$A") bytes"
+          [ "$want" = "$got" ] || { echo "::error::$A does not match its .sha256"; exit 1; }
+          mv "$d/$A" $W/runtime2.sqfs
       - name: Boot twins
-        run: sudo -E bash ci/boot-twins.sh "${{ inputs.twins }}" "${{ inputs.tv_cpus }}" "${{ (inputs.runtime_image != '' || inputs.runtime_asset != '') && '/opt/twinci/runtime.sqfs' || '' }}" "${{ startsWith(inputs.runtime_asset, 'atl32-') && 'runtime32' || 'runtime' }}"
+        run: sudo -E bash ci/boot-twins.sh "${{ inputs.twins }}" "${{ inputs.tv_cpus }}" "${{ (inputs.runtime_image != '' || inputs.runtime_asset != '') && '/opt/twinci/runtime.sqfs' || '' }}" "${{ startsWith(inputs.runtime_asset, 'atl32-') && 'runtime32' || 'runtime' }}" "${{ inputs.runtime_asset_2 != '' && '/opt/twinci/runtime2.sqfs' || '' }}" "${{ startsWith(inputs.runtime_asset_2, 'atl32-') && 'runtime32' || 'runtime' }}"
       - name: Hold for agents
         if: inputs.agent_hold_minutes != '0'
         run: |
-          echo "agent mode: holding runner ${{ inputs.agent_hold_minutes }} min for agents (tailnet $(tailscale ip -4), host gh-twin-${{ github.run_id }})"
+          echo "agent mode: holding runner ${{ inputs.agent_hold_minutes }} min for agents (tailnet $(tailscale ip -4), host gh-twin-${{ github.run_id }}), watchdog ${{ inputs.watchdog_minutes }} min"
           # Exit early once ALL agents are done and the runner is idle.
           # Each agent uses its own signal files so two agents sharing one
           # runner cannot cut each other off: the agent touches
@@ -155,6 +179,22 @@ jobs:
           # exists. Require the done-condition for 3 consecutive minutes so
           # a new agent claiming the runner just as the old one finishes
           # does not get cut off.
+          # v4 watchdog (only when watchdog_minutes > 0): the done-signal
+          # above cannot fire when an agent dies without writing a
+          # done-file, so the run would sit until agent_hold_minutes
+          # expires. The watchdog exits when no hold file has been touched
+          # for watchdog_minutes, or when no agent claims the runner within
+          # 30 min of hold start. This is keyed on file MTIME, so agents
+          # MUST heartbeat-touch their active file at least every 10 min
+          # while working: after claiming, start
+          #   (while true; do sleep 300; touch /tmp/agent-active-<id>; done) &
+          # and kill it on release. Agents that only touch once at claim
+          # WILL be watchdog-killed on a watchdog run -- that is by design,
+          # but it is why watchdog_minutes defaults to 0 (v3 behaviour) and
+          # must be opted into per dispatch until every brief heartbeats.
+          wd="${{ inputs.watchdog_minutes }}"
+          [[ "$wd" =~ ^[0-9]+$ ]] || { echo "::error::bad watchdog_minutes: $wd"; exit 1; }
+          hold_start=$(date +%s)
           done_count=0
           for i in $(seq 1 $(( ${{ inputs.agent_hold_minutes }} ))); do
             sleep 60
@@ -167,6 +207,19 @@ jobs:
               fi
             else
               done_count=0
+            fi
+            if [ "$wd" != "0" ]; then
+              newest=$(stat -c %Y /tmp/agent-active-* /tmp/agent-done-* 2>/dev/null | sort -n | tail -1 || true)
+              now=$(date +%s)
+              if [ -z "$newest" ]; then
+                if [ $(( now - hold_start )) -ge 1800 ]; then
+                  echo "watchdog: no agent claimed the runner within 30 min, exiting hold"
+                  exit 0
+                fi
+              elif [ $(( now - newest )) -ge $(( wd * 60 )) ]; then
+                echo "watchdog: no hold-file activity for ${wd} min (last touch $(( (now - newest) / 60 )) min ago), exiting hold"
+                exit 0
+              fi
             fi
           done
           echo "hold time expired"
