@@ -254,5 +254,5 @@ jobs:
         run: |
           f=/tmp/twin-${{ inputs.name }}-${{ github.run_id }}.tar.gz
           sudo tar -C /opt/twinci -czf $f out
-          python3 ci/ghrel.py upload sarahubprivate/twinci-data reports $f
+          python3 ci/ghrel.py upload sarahubprivate/twinci-data reports-2026-11-13 $f
           echo "report: $(basename $f)  apps: $(wc -l < /opt/twinci/out/SUMMARY.txt 2>/dev/null || echo 0)"
